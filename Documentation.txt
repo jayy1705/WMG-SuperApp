@@ -1,0 +1,525 @@
+SuperApp — WMG Data Pipeline
+Full Application Documentation
+
+Scope: Convert -> Clean -> Analyze pipeline, packaged as a single Tkinter
+       desktop app (and eventually a single .exe via PyInstaller).
+
+Developer: Jayyidan A (jayyidan1705@outlook.com)
+should you require any assistance, feel free to contact me
+Updated: 7/8/2026
+
+
+1. OVERVIEW
+
+SuperApp combines three separate tools into one desktop program
+with a single window and a 3-step wizard flow:
+
+    Step 1: Convert   -> InvoiceConverter.py   (raw WMG Invoice .xlsx -> clean DataFrame)
+    Step 2: Clean      -> cleaning.py           (standardize names, group by outlet)
+    Step 3: Analyze     -> analysis.py + friends (generate the Overall Sales Report PDF)
+
+Each stage is a Tkinter Frame (in gui/) that hands its output DataFrame to
+the next stage entirely in memory. Nothing is saved to disk or reopened
+between steps — the user only saves a file at the very end (Step 3's PDF
+export), or if the pipeline needs to be stopped partway, via Step 3's
+placeholder "Save Final File As..." fallback.
+
+The app is designed to be pointed at directly by PyInstaller to produce a
+single-file .exe. This constraint shaped several technical decisions
+documented below (most notably, choosing ReportLab over WeasyPrint for PDF
+generation — see section 5.4).
+
+
+2. PROJECT STRUCTURE
+
+SuperApp/
+├── main.py                  Entry point. Opens the window, owns pipeline
+│                             state, switches between Step 1/2/3 frames.
+├── InvoiceConverter.py       Step 1 logic: raw .xlsx -> flat DataFrame.
+├── cleaning.py               Step 2 logic: name cleanup + outlet grouping.
+├── mapping_store.py          Reads/writes mapping.csv (name -> group mapping).
+├── mapping_editor.py         GUI popup: add/edit/delete mapping entries.
+├── mapping.csv                The actual raw-name -> group-name mapping data.
+├── analysis.py                Step 3 logic: aggregation + report orchestration.
+├── analysis_charts.py         Step 3 logic: matplotlib/seaborn chart builders.
+├── analysis_pdf.py            Step 3 logic: ReportLab PDF layout/assembly.
+├── requirements.txt           Python dependencies.
+└── gui/
+    ├── __init__.py            Empty; marks gui/ as an importable package.
+    ├── step1_convert.py       Step 1 screen (file picker + Run button).
+    ├── step2_clean.py         Step 2 screen (cleaning + mapping editor button).
+    └── step3_analyze.py       Step 3 screen (Generate Report button).
+
+Design convention: every *_XXX.py at the root level is pure logic with NO
+Tkinter code (importable and unit-testable on its own). All GUI code lives
+under gui/. This was an existing convention from InvoiceConverter.py /
+cleaning.py that Step 3's files (analysis.py, analysis_charts.py,
+analysis_pdf.py) follow as well.
+
+
+3. INSTALLATION
+
+Requirements (see requirements.txt):
+
+    pandas>=2.0
+    openpyxl>=3.1
+    python-calamine>=0.2
+    matplotlib>=3.8
+    seaborn>=0.13
+    reportlab>=4.0
+
+Install with:
+
+    pip install -r requirements.txt
+
+Notes:
+  - matplotlib, seaborn, and reportlab were added specifically to support
+    Step 3 (AutoEDA / Overall Sales Report). If you see
+    "ModuleNotFoundError: No module named 'matplotlib'" (or seaborn, or
+    reportlab), it means requirements.txt hasn't been (re)installed in the
+    environment actually running main.py. Activate the correct virtual
+    environment / interpreter first if you use one, then re-run the
+    install command above.
+  - If this app is later packaged with PyInstaller, matplotlib, seaborn,
+    and reportlab must all be present in the SAME environment PyInstaller
+    is run from, since it bundles whatever it finds there.
+
+
+
+4. RUNNING THE APP
+
+From the SuperApp/ root:
+
+    python main.py
+
+This opens a single window titled "WMG Data Pipeline" and starts on Step 1.
+Steps are: Step 1 -> Step 2 -> Step 3, with Back buttons on Steps 2 and 3
+to return to the previous stage without losing the earlier stage's output
+(main.py keeps converted_df and cleaned_df in memory for the whole
+session).
+
+
+5. STEP-BY-STEP WALKTHROUGH
+
+5.1 Step 1 — Convert (gui/step1_convert.py + InvoiceConverter.py)
+--------------------------------------------------------------------
+  1. Click "Choose File..." and select the raw WMG invoice listing .xlsx.
+  2. Click "Run Conversion". InvoiceConverter.convert_to_dataframe() parses
+     the file and returns:
+       - df                : the flattened line-item DataFrame
+       - unrecognized      : rows that didn't match a known invoice pattern
+                              and were skipped
+       - mismatches        : invoices whose header InvoiceAmount doesn't
+                              reconcile with the sum of their line items
+       - invoice_count     : number of distinct invoices found
+  3. The status log reports row/invoice counts and lists (up to 10 each)
+     any unrecognized rows or mismatched invoices, so problems are visible
+     rather than silently dropped.
+  4. Click "Next: Clean & Group Names ->" to hand the DataFrame to Step 2.
+
+Expected output columns from this stage (used downstream by Step 2 and
+Step 3) include at minimum: DocNo, DocDate, Code, Name, InvoiceAmount,
+Description, Quantity, UOM, UnitPrice, LineAmount, Project, GLCode, Seq.
+
+
+5.2 Step 2 — Clean & Group (gui/step2_clean.py + cleaning.py)
+--------------------------------------------------------------------
+  1. Click "Run Cleaning & Grouping". This calls cleaning.process(), which
+     runs, in order:
+       a. clean_names()             - normalize whitespace, uppercase the
+                                       Name column
+       b. convert_econsave_names()  - detects "10026 BUTTERWORTH"-style
+                                       names, extracts the 5-digit code into
+                                       a new EconsaveCode column, rewrites
+                                       the name as "ECONSAVE - <branch>"
+       c. apply_grouping()          - adds the 'group' column by mapping
+                                       Name through the raw-name -> group
+                                       mapping loaded from mapping.csv
+                                       (see 5.2.1). Unmatched names fall
+                                       back to group = "Other" rather than
+                                       vanishing.
+       d. convert_cs_brothers_names() - for rows already grouped as
+                                       "CS BROTHERS", looks up the Code
+                                       column against a hardcoded dict
+                                       (CS_BROTHERS_CODE_MAP in cleaning.py)
+                                       to rewrite the name as
+                                       "CS BROTHERS - <branch>" and store
+                                       the raw code in a new
+                                       CSBrothersCode column. A no-op if
+                                       the DataFrame has no Code/group
+                                       column.
+  2. The status log reports total rows processed and lists any names NOT
+     found in the mapping (grouped as "Other") so they can be added later.
+  3. Click "Manage Customer Names..." to open the mapping editor (see
+     5.2.1) if new/incorrect mappings need fixing. After saving changes
+     there, re-run "Run Cleaning & Grouping" to apply them (the app does
+     not auto-re-run cleaning for you).
+  4. Click "Next: Analyze ->" to hand the cleaned/grouped DataFrame to
+     Step 3.
+
+5.2.1 The mapping system (mapping_store.py, mapping_editor.py, mapping.csv)
+--------------------------------------------------------------------
+  - mapping.csv is the single source of truth for "which raw store name
+    belongs to which parent/group name" (e.g. many differently-formatted
+    "ROSYAM MART" branch names all rolling up to one group).
+  - mapping_store.py handles reading/writing mapping.csv, including
+    locating the correct file path whether running as a plain script or
+    as a packaged .exe.
+  - mapping_editor.py is a GUI popup ("Manage Customer Names") with a
+    table for adding, editing, and deleting mapping entries directly,
+    without needing to open the CSV in Excel.
+  - cleaning.py loads the mapping once at import time into the module-
+    level NAME_TO_GROUP dict; reload_mapping() re-reads it from disk after
+    edits (called automatically when the mapping editor reports a save).
+  - Mapping keys are normalized (whitespace-collapsed, uppercased) the
+    same way incoming data is normalized, so formatting quirks in
+    mapping.csv itself can't silently break matching.
+  - validate_mapping() flags any raw name mapped to two different groups
+    (a conflict) and, by default, prints a warning and keeps the LAST
+    occurrence rather than failing silently or crashing.
+
+Output columns added by this stage: group (always), EconsaveCode (always,
+may be blank), CSBrothersCode (only if CS Brothers rows exist).
+
+
+5.3 Step 3 — Analyze (gui/step3_analyze.py + analysis.py + analysis_charts.py
+                       + analysis_pdf.py)
+--------------------------------------------------------------------
+  1. Click "Generate Overall Sales Report (PDF)...".
+  2. A save dialog appears (default filename: Overall_Sales_Report.pdf).
+     Choosing a location starts report generation on a BACKGROUND THREAD
+     so the GUI doesn't freeze while matplotlib/ReportLab work — the
+     Generate button is disabled until it finishes.
+  3. On success, a confirmation dialog shows the saved path and the status
+     log records it. On failure, the error is shown in both a dialog and
+     the status log (e.g. if a required column like DocDate, group,
+     Description, or LineAmount is missing from the data).
+
+This is currently the ONLY report Step 3 produces ("Report 1: Overall
+Sales Report"). A second report ("Report 2: Monthly Detailed Report",
+branch-level detail including products) has been discussed but not yet
+built — see section 8 (Future Work).
+
+
+5.4 Why ReportLab instead of jinja2 + WeasyPrint
+--------------------------------------------------------------------
+The original plan was matplotlib + seaborn + jinja2 + pandas, with jinja2
+templates rendered to HTML/CSS and converted to PDF via WeasyPrint. This
+was changed to pure ReportLab (Platypus) because WeasyPrint depends on
+system-level libraries (GTK/Pango/Cairo/GDK-Pixbuf) that are notoriously
+difficult to bundle reliably with PyInstaller on Windows — a real risk
+given this app's stated goal of shipping as a single .exe. ReportLab has
+no such system dependencies and is a standard choice for PyInstaller-
+packaged report generators. The tradeoff is that page layout is done via
+ReportLab's Platypus "flowables" (Paragraph, Image, Table, PageBreak,
+KeepTogether, etc.) in Python rather than HTML/CSS — more verbose, but
+fully reliable to package. jinja2 was dropped entirely as a result (it's
+not in requirements.txt).
+
+
+
+6. REPORT 1: OVERALL SALES REPORT — DETAILED SPEC
+
+
+6.1 Required input columns
+--------------------------------------------------------------------
+analysis.py validates the incoming DataFrame has all of:
+    DocDate, group, Description, LineAmount
+before doing anything else (analysis.validate_columns / prepare_dataframe).
+A missing column raises a clear ValueError naming exactly which column(s)
+are missing, rather than failing deep inside an aggregation with a raw
+KeyError.
+
+Sales figures throughout the report are SUM(LineAmount) — this was an
+explicit decision after checking that InvoiceAmount (a header-level field,
+repeated across every line of the same invoice) is not safe to sum
+directly, whereas LineAmount is per-line and additive.
+
+"Outlet" throughout Report 1 means the 'group' column (parent/chain level,
+e.g. "Sri Ternak"), NOT the branch-level 'Name' column (e.g.
+"ST ROSYAM MART SDN BHD - SNWG"). Branch-level detail is intended for the
+not-yet-built Report 2.
+
+
+6.2 Period detection
+--------------------------------------------------------------------
+There is no month-range picker in the UI. Instead, analysis.py derives a
+'Month' column from every row's DocDate, and the report's covered period
+is simply whatever range of months is present in the data handed to it
+(e.g. a file containing Jan-May 2026 rows produces a report labeled
+"Jan 2026 - Jul 2026"... i.e. the label always reflects the actual data,
+not a fixed calendar assumption). This means the "export in May, get
+Jan-May" requirement is satisfied naturally by upstream data export
+behavior — Step 3 does not need to know or care how many months are in
+the file.
+
+
+6.3 Page layout (landscape A4)
+--------------------------------------------------------------------
+The whole PDF is landscape A4 (analysis_pdf.PAGE_SIZE = landscape(A4)),
+18mm margins on all sides. Report structure, in page order:
+
+  Page 1            Cover page: title, period covered, generation
+                     timestamp, total company-wide sales (grand total).
+
+  Page 2..N         SECTION 1 — Yearly Overview (Sales by Outlet)
+                     One horizontal bar chart: every outlet's total sales,
+                     sorted highest-to-lowest, capped at 30 outlets per
+                     page/chart (analysis.paginate_rows, max_per_page=30).
+                     If there are more than 30 outlets, additional pages
+                     are added automatically, each labeled "Page X of Y"
+                     in both the section heading and inside the chart
+                     title itself. This cap exists because cramming more
+                     and more outlets onto one fixed-height chart makes
+                     the bars progressively thinner and eventually
+                     unreadable — capping at 30/page keeps bar thickness
+                     consistent regardless of total outlet count.
+                     The period range appears both in the section heading
+                     and as a subtitle on the chart itself.
+
+  Page N+1..M       SECTION 2 — Product Sales per Outlet
+                     ONE OUTLET PER PAGE, in the same descending-sales
+                     order as Section 1. Each page shows every product
+                     that outlet sold (NO cap, NO "Others" bucket — this
+                     was an explicit requirement), as a horizontal bar
+                     chart with each bar labeled with its RM amount, plus
+                     the outlet's total sales in the chart title.
+                     If an outlet sold more than 25 distinct products,
+                     its chart is split across multiple pages (25
+                     products per page, analysis.paginate_rows,
+                     max_per_page=25), each labeled "(Page X of Y)" in
+                     the chart title. Tested and confirmed working with a
+                     synthetic 40-product outlet (correctly split
+                     25 + 15 across two pages).
+
+  Page M+1          SECTION 3 — Product Contribution to Total Sales
+                     A DONUT chart: top 30 products by % of TOTAL
+                     company-wide sales, plus one "Others" slice for
+                     everything past the top 30. Each slice has its own
+                     distinct color (seaborn "husl" palette, scaled to
+                     however many slices are present) except "Others",
+                     which is always a fixed neutral gray so it reads
+                     consistently regardless of the color palette. A
+                     legend (two columns) lists every product name and
+                     its %, since labeling 30+ slices directly on the
+                     donut is unreadable.
+
+  Page M+2          SECTION 3b — "Others" Detailed Breakdown
+                     Only present if the Others slice from Section 3 is
+                     non-empty (i.e. there were more than 30 distinct
+                     products company-wide). A second donut chart drills
+                     into exactly what makes up that "Others" slice: every
+                     remaining product is shown individually, with
+                     percentages recalculated relative to the OTHERS
+                     SUBTOTAL (so this chart's slices sum to 100% on
+                     their own, independent of Section 3's percentages).
+                     The chart title states the Others subtotal in RM and
+                     what % of TOTAL company-wide sales it represents.
+
+Both donut charts (Section 3 and 3b) use an explicitly positioned
+matplotlib axes (fig.add_axes with fixed figure-fraction coordinates)
+rather than plt.tight_layout(), because tight_layout was found to shrink
+the donut significantly to make room for an external legend — explicit
+positioning keeps the donut large and consistent regardless of how many
+legend entries there are.
+
+
+6.4 Layout engine details worth knowing if this needs further editing
+--------------------------------------------------------------------
+  - Every section's heading + chart image is wrapped in ReportLab's
+    KeepTogether(...), which keeps them from being split across a page
+    boundary. Without this, a chart image too tall for the remaining
+    space on a page gets pushed entirely to the next page while its
+    heading text stays behind — leaving a near-blank orphaned page. This
+    was an actual bug encountered and fixed during development.
+  - The vertical space reserved for heading text above each chart image
+    (so the max_height passed to the image scaler is accurate) is
+    computed by PRECISELY measuring each Paragraph flowable's real
+    rendered height (analysis_pdf._heading_block_height, using
+    Paragraph.wrap() plus the style's spaceBefore/spaceAfter) rather than
+    a hardcoded guess. An earlier hardcoded-constant version left a
+    noticeable amount of unused blank space at the bottom of every page;
+    switching to precise measurement recovered most of that space.
+  - Chart PNGs are generated at DPI 180, sized to fill the printable
+    landscape-A4 content area (analysis_charts.PAGE_FIGSIZE = (13.5, 8.9)
+    inches) rather than a small fixed size, specifically so bar charts and
+    donuts read clearly when printed, not floating in a small box
+    surrounded by blank space (this was raised explicitly during
+    development after an early version looked too small/sparse).
+  - analysis_charts._dynamic_figsize(n_rows) fills the page by default
+    and only grows taller than one page once a chart would otherwise need
+    more than ~26 rows at a comfortable bar thickness (MIN_ROW_HEIGHT =
+    0.34in/row) — this matters less now that both outlet counts (Section
+    1) and product counts (Section 2) are hard-capped per page (30 and 25
+    respectively), so in practice this path is rarely hit.
+
+
+6.5 Known configuration constants (all easy to find/change)
+--------------------------------------------------------------------
+  analysis.py:
+    generate_overall_sales_report():
+      outlet pagination      max_per_page=30   (Section 1)
+      product pagination     max_per_page=25   (Section 2, per outlet)
+      product_contribution_overall(df, top_n=30)   (Section 3 top-N cutoff)
+
+  analysis_charts.py:
+    PAGE_FIGSIZE = (13.5, 8.9)   inches — target print area for all charts
+    MIN_ROW_HEIGHT = 0.34         inches per bar, once a chart must exceed
+                                   one page's worth of rows
+    BAR_COLOR = "#2E5C8A"         primary bar/slice color
+    ACCENT_COLOR = "#5DA9E9"      Section 2 (per-outlet product) bar color
+    OTHERS_COLOR = "#B0B0B0"      fixed gray, always used for "Others"
+    dpi = 180                     (inside _fig_to_buffer)
+
+  analysis_pdf.py:
+    PAGE_SIZE = landscape(A4)
+    MARGIN = 18mm
+    FRAME_PADDING_BUFFER = 16pt   safety buffer subtracted from content
+                                   width/height to account for
+                                   SimpleDocTemplate's internal frame
+                                   padding
+
+
+
+7. FUNCTION REFERENCE (Step 3 modules)
+
+
+analysis.py
+--------------------------------------------------------------------
+  validate_columns(df) -> None
+      Raises ValueError if DocDate/group/Description/LineAmount is missing.
+
+  prepare_dataframe(df) -> pd.DataFrame
+      Validates columns, parses DocDate, drops unparseable-date rows
+      (with a printed warning), adds a 'Month' period column. Returns a
+      copy.
+
+  get_period_label(df) -> str
+      e.g. "Jan 2026 - Jul 2026", or "Jul 2026" if only one month present.
+
+  sales_by_outlet(df) -> pd.DataFrame
+      Columns: ['group', 'TotalSales'], sorted descending. Powers
+      Section 1.
+
+  sales_by_outlet_product(df, top_n=None) -> dict
+      {outlet_name: {"total_sales": float, "products": DataFrame[
+      Description, Sales]}}. top_n=None (the default used by the report)
+      means every product is included, no cap, no "Others" bucket.
+      Powers Section 2.
+
+  classify_outlet_size(outlet_totals, big_quantile=0.75) -> dict
+      DEPRECATED / UNUSED. Originally classified outlets as "big" (own
+      page) vs "small" (packed into a shared grid) for an earlier layout
+      design. Superseded once "one outlet per page, always" became the
+      requirement. Left in place only in case a future layout wants it
+      back — safe to delete otherwise.
+
+  paginate_rows(data, max_per_page=25) -> list[pd.DataFrame]
+      Generic chunker used for BOTH outlet pagination (Section 1,
+      max_per_page=30) and product pagination (Section 2,
+      max_per_page=25).
+
+  product_contribution_overall(df, top_n=30) -> (primary_df, others_breakdown_df)
+      primary_df: top N products + one "Others" row, % of GRAND TOTAL.
+      others_breakdown_df: every product beyond the top N, % of the
+      OTHERS SUBTOTAL (sums to 100% independently). Powers Sections 3 and
+      3b.
+
+  generate_overall_sales_report(df, output_path) -> str
+      The single entry point gui/step3_analyze.py calls. Runs the full
+      pipeline: prepare -> aggregate -> build all charts -> lay out and
+      save the PDF. Returns output_path.
+
+
+analysis_charts.py
+--------------------------------------------------------------------
+  build_outlet_overview_chart(outlet_totals, period_label=None,
+                               page_num=1, total_pages=1) -> io.BytesIO
+      Section 1 chart (one page/chunk of <=30 outlets at a time).
+
+  build_outlet_product_chart(outlet_name, product_data, total_sales,
+                              page_num=1, total_pages=1) -> io.BytesIO
+      Section 2 chart (one page/chunk of <=25 products at a time, for one
+      outlet).
+
+  build_product_contribution_chart(product_contribution) -> io.BytesIO
+      Section 3 donut (top 30 + Others).
+
+  build_others_breakdown_chart(others_breakdown, others_total_sales,
+                                others_pct_of_grand_total) -> io.BytesIO
+      Section 3b donut (drill-down into "Others").
+
+  _build_donut(data, title, legend_ncol=2) -> io.BytesIO
+      Shared internal helper both donut functions call.
+
+  All chart functions return an in-memory PNG (io.BytesIO) — nothing is
+  ever written to disk here. The Agg backend is forced
+  (matplotlib.use("Agg")) since this runs headless inside a Tkinter app /
+  packaged .exe with no chart GUI window needed.
+
+
+analysis_pdf.py
+--------------------------------------------------------------------
+  build_overall_sales_pdf(output_path, period_label, generated_at,
+                           outlet_totals, outlet_chart_imgs, chart1_imgs,
+                           chart3_img, product_contribution,
+                           chart3b_img=None) -> str
+      The single entry point analysis.py calls. Assembles the cover page
+      and all three (or four, with 3b) sections into one PDF via
+      ReportLab's SimpleDocTemplate, and saves it to output_path.
+
+  Internal section builders (each returns a list of ReportLab flowables):
+      _cover_page(period_label, generated_at, grand_total)
+      _section1_overview(chart1_imgs, period_label)
+      _section2_outlet_products(outlet_totals, outlet_chart_imgs)
+      _section3_contribution(chart3_img, chart3b_img=None)
+
+  Internal helpers:
+      _image_flowable(png_buffer, max_width, max_height=None)
+          Scales a PNG to fit, preserving aspect ratio.
+      _heading_block_height(paragraphs, width)
+          Precisely measures how much vertical space a set of heading
+          Paragraphs will actually take, for accurate image-height
+          reservation (see 6.4).
+
+
+
+8. TROUBLESHOOTING
+
+  "ModuleNotFoundError: No module named 'matplotlib'" (or seaborn /
+  reportlab)
+      requirements.txt hasn't been installed in the Python environment
+      actually running main.py. Run: pip install -r requirements.txt
+      (activating the correct venv/conda environment first if you use
+      one). If using an IDE, confirm it's pointed at the same interpreter
+      you installed into.
+
+  "Data is missing required column(s) for the Overall Sales Report: [...]"
+      The DataFrame handed to Step 3 is missing one of DocDate, group,
+      Description, or LineAmount. This normally means Step 1/2 didn't run
+      as expected, or a non-standard file was fed into the pipeline.
+      Check Step 1's conversion log for unrecognized rows, and Step 2's
+      cleaning log for unmatched names.
+
+  Report generation seems slow / GUI briefly unresponsive
+      Generation runs on a background thread, but very large datasets
+      (many outlets x many products) still take real CPU time to render
+      dozens of high-resolution chart images plus lay out potentially
+      50+ PDF pages. This is expected; the Generate button re-enables and
+      a confirmation dialog appears once it's done.
+
+  PDF pages look mostly blank / a heading appears alone with no chart
+  below it
+      This was a known bug during development (KeepTogether wasn't
+      applied consistently) and has since been fixed everywhere in
+      analysis_pdf.py. If it resurfaces after future edits, check that
+      every heading+image pair added to the PDF story is wrapped in
+      KeepTogether([...]), and that the max_height passed to
+      _image_flowable() accounts for the ACTUAL heading height via
+      _heading_block_height() rather than a hardcoded guess.
+
+
+
+END OF DOCUMENT
+
+ALL THE BEST!
