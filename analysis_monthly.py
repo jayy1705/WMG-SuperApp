@@ -7,12 +7,12 @@ gui/monthly_report_dialog.py. Shows that outlet's branch-level detail —
 Report 1 never goes below the 'group' (outlet) level, this report is
 where branch ('Name') level detail lives.
 
-Reuses analysis.py's generic building blocks (sales_by_outlet_product
-with group_col='Name', paginate_rows) and analysis_charts.py's generic
-chart builders (build_outlet_overview_chart with name_col='Name',
-build_outlet_product_chart) rather than duplicating that logic — only the
-KPI computation and PDF layout (analysis_monthly_pdf.py) are Report-2
-specific.
+Reuses analysis.py's generic building blocks (sales_by_outlet and
+sales_by_outlet_product with group_col='Name', paginate_rows) and
+analysis_charts.py's generic chart builders (build_outlet_overview_chart
+with name_col='Name', build_outlet_product_chart) rather than duplicating
+that logic — only the KPI computation and PDF layout
+(analysis_monthly_pdf.py) are Report-2 specific.
 
 No GUI code here — import this from gui/step3_analyze.py the same way
 analysis.py is imported for Report 1.
@@ -22,7 +22,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from analysis import prepare_dataframe, sales_by_outlet_product, paginate_rows
+from analysis import prepare_dataframe, sales_by_outlet, sales_by_outlet_product, paginate_rows
 
 
 # ---------------------------------------------------------------------
@@ -69,14 +69,14 @@ def filter_to_outlet_month(df: pd.DataFrame, outlet: str, month) -> pd.DataFrame
 def compute_kpis(filtered_df: pd.DataFrame) -> dict:
     """
     Summary KPIs for one outlet in one month:
-      total_sales             sum(LineAmount)
+      total_sales              sum(LineAmount)
       invoice_count            count of distinct DocNo
-      branch_count              count of distinct Name (branches active
-                                this month)
+      branch_count             count of distinct Name (branches active
+                               this month)
       avg_transaction_value    total_sales / invoice_count (0 if no
-                                invoices)
+                               invoices)
       top_branch / top_branch_sales   the single highest-selling branch
-                                and its sales figure (None if no data)
+                               and its sales figure (None if no data)
     """
     if filtered_df.empty:
         return {
@@ -107,22 +107,6 @@ def compute_kpis(filtered_df: pd.DataFrame) -> dict:
     }
 
 
-def sales_by_branch(filtered_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Total LineAmount per branch 'Name', sorted descending.
-    Returns columns: ['Name', 'TotalSales'].
-    """
-    if filtered_df.empty:
-        return pd.DataFrame(columns=["Name", "TotalSales"])
-    return (
-        filtered_df.groupby("Name", as_index=False)["LineAmount"]
-        .sum()
-        .rename(columns={"LineAmount": "TotalSales"})
-        .sort_values("TotalSales", ascending=False)
-        .reset_index(drop=True)
-    )
-
-
 # ---------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------
@@ -145,19 +129,19 @@ def generate_monthly_detail_report(df: pd.DataFrame, outlet: str, month, output_
     month_label = month.strftime("%b %Y")
     kpis = compute_kpis(filtered)
 
-    branch_totals = sales_by_branch(filtered)
+    # Branch-level equivalents of Report 1's outlet-level aggregations.
+    branch_totals = sales_by_outlet(filtered, group_col="Name")
     branch_products = sales_by_outlet_product(filtered, top_n=None, group_col="Name")
 
     # Branch comparison chart: same 30-per-page cap as Report 1's outlet
     # overview, for the same reason (bar thickness stays readable).
     branch_totals_pages = paginate_rows(branch_totals, max_per_page=30)
-    total_branch_overview_pages = len(branch_totals_pages)
     branch_overview_imgs = [
         build_outlet_overview_chart(
             page_df,
             period_label=month_label,
             page_num=idx + 1,
-            total_pages=total_branch_overview_pages,
+            total_pages=len(branch_totals_pages),
             name_col="Name",
             title=f"{outlet} — Branch Sales Comparison",
         )
@@ -169,10 +153,9 @@ def generate_monthly_detail_report(df: pd.DataFrame, outlet: str, month, output_
     branch_chart_imgs = {}
     for branch, data in branch_products.items():
         pages = paginate_rows(data["products"], max_per_page=25)
-        total_pages = len(pages)
         branch_chart_imgs[branch] = [
             build_outlet_product_chart(
-                branch, page_df, data["total_sales"], page_num=idx + 1, total_pages=total_pages
+                branch, page_df, data["total_sales"], page_num=idx + 1, total_pages=len(pages)
             )
             for idx, page_df in enumerate(pages)
         ]

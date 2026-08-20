@@ -4,12 +4,12 @@ cleaning.py
 Reusable data-cleaning functions: converting/standardizing customer names
 and grouping raw store names under a canonical parent/group name.
 
-The name -> group mapping itself is NOT hardcoded here anymore — it's
-loaded from mapping.csv via mapping_store.py, so it can be edited (through
-the app's "Manage Customer Names" screen, or directly in Excel) without
-touching this file or rebuilding the app. See mapping_store.py.
+The name -> group mapping itself is NOT hardcoded here — it's loaded from
+mapping.csv via mapping_store.py, so it can be edited (through the app's
+"Manage Customer Names" screen, or directly in Excel) without touching
+this file or rebuilding the app. See mapping_store.py.
 
-Import this from a notebook (for testing) or from app.py (the GUI).
+Import this from a notebook (for testing) or from gui/step2_clean.py.
 """
 
 import re
@@ -20,16 +20,16 @@ from mapping_store import load_mapping
 
 
 # ---------------------------------------------------------------------
-# 2. WHITESPACE NORMALIZATION (defined early — used by both the mapping
+# 1. WHITESPACE NORMALIZATION (defined early — used by both the mapping
 #    builder below and the name-cleaning step later)
 # ---------------------------------------------------------------------
 def normalize_whitespace(text) -> str:
     """
     Fix common whitespace issues seen in real store-name data:
-      - leading/trailing spaces        '  ABC '        -> 'ABC'
+      - leading/trailing spaces        '  ABC '         -> 'ABC'
       - double/irregular internal gaps 'ABC   MART'     -> 'ABC MART'
       - space just inside parentheses  '( PENANG )'     -> '(PENANG)'
-                                        '(PENANG  )'     -> '(PENANG)'
+                                       '(PENANG  )'     -> '(PENANG)'
     Collapses ALL whitespace characters (regular spaces, tabs, non-breaking
     spaces, other unicode spaces) into a single regular space.
     Always returns a string (non-string input is stringified first).
@@ -42,7 +42,7 @@ def normalize_whitespace(text) -> str:
 
 
 # ---------------------------------------------------------------------
-# 3. VALIDATION — catches conflicting duplicate keys before they bite you
+# 2. VALIDATION — catches conflicting duplicate keys before they bite you
 # ---------------------------------------------------------------------
 def validate_mapping(pairs):
     """
@@ -55,24 +55,24 @@ def validate_mapping(pairs):
     for raw_name, group_name in pairs:
         seen.setdefault(raw_name, set()).add(group_name)
 
-    conflicts = {name: sorted(groups) for name, groups in seen.items() if len(groups) > 1}
-    return conflicts
+    return {name: sorted(groups) for name, groups in seen.items() if len(groups) > 1}
 
 
+# ---------------------------------------------------------------------
+# 3. MAPPING BUILD / RELOAD
+# ---------------------------------------------------------------------
 def build_mapping(pairs=None, on_conflict="warn"):
     """
     Build the final {raw_name: group_name} dict used for df.map().
     Keys are run through the same normalize_whitespace() + uppercase used
     on incoming data, so a stray double space or inconsistent casing in
-    this list can't silently break matching against cleaned data.
+    the mapping file can't silently break matching against cleaned data.
     on_conflict: 'warn' (print + keep last), 'raise' (stop and raise ValueError),
-                 or 'ignore' (silently keep last, old dict-literal behaviour).
+                 or 'ignore' (silently keep last).
     """
     if pairs is None:
         pairs = load_mapping()
 
-    # Normalize keys the same way clean_names() normalizes incoming data,
-    # so mapping entries always match regardless of formatting quirks here.
     normalized_pairs = [(normalize_whitespace(name).upper(), group) for name, group in pairs]
 
     conflicts = validate_mapping(normalized_pairs)
@@ -81,13 +81,12 @@ def build_mapping(pairs=None, on_conflict="warn"):
               "\n".join(f"  - {name!r}: {groups}" for name, groups in conflicts.items())
         if on_conflict == "raise":
             raise ValueError(msg)
-        else:
-            print("WARNING:", msg)
+        print("WARNING:", msg)
 
     return dict(normalized_pairs)  # dict() over a list keeps the LAST occurrence per key
 
 
-# Build once at import time so app.py can just do: from cleaning import NAME_TO_GROUP
+# Build once at import time so callers can just do: from cleaning import NAME_TO_GROUP
 NAME_TO_GROUP = build_mapping(on_conflict="warn")
 
 
@@ -138,9 +137,8 @@ def convert_econsave_names(df: pd.DataFrame, name_col: str = "Name") -> pd.DataF
         cleaned = normalize_whitespace(name)
         match = pattern.match(cleaned)
         if match:
-            code = match.group(1)
             branch = normalize_whitespace(match.group(2))
-            return pd.Series([code, f"ECONSAVE - {branch}"])
+            return pd.Series([match.group(1), f"ECONSAVE - {branch}"])
         return pd.Series(["", cleaned])
 
     df[["EconsaveCode", name_col]] = df[name_col].apply(split_code)
@@ -179,7 +177,8 @@ def unmatched_names(df: pd.DataFrame, name_col: str = "Name", mapping: dict = No
     return sorted(set(df[name_col].astype(str)) - set(mapping.keys()))
 
 
-# 6b. CS BROTHERS-SPECIFIC OUTLET DIFFERENTIATION
+# ---------------------------------------------------------------------
+# 7. CS BROTHERS-SPECIFIC OUTLET DIFFERENTIATION
 # ---------------------------------------------------------------------
 # Hardcoded lookup: raw store code (from the invoice data's Code column)
 # -> friendly branch name. Hardcoded deliberately, not an external CSV
@@ -196,10 +195,10 @@ CS_BROTHERS_CODE_MAP = {
     "300-KAJANG": "KAJANG",
     "300-T.PRK": "T.PRK",
     "300-C0084": "C0084",
-    "300-D.PERD": "D.PERD",  
+    "300-D.PERD": "D.PERD",
 }
- 
- 
+
+
 def convert_cs_brothers_names(
     df: pd.DataFrame,
     name_col: str = "Name",
@@ -213,7 +212,7 @@ def convert_cs_brothers_names(
     in the invoice data (from InvoiceConverter's FIELDS list). This runs
     AFTER apply_grouping(), not before, since it needs the group column
     to find CS BROTHERS rows.
- 
+
     For every row already grouped as 'CS BROTHERS':
       - stores the raw outlet code in a new 'CSBrothersCode' column
       - rewrites the name to 'CS BROTHERS - <friendly name>', looking the
@@ -224,7 +223,7 @@ def convert_cs_brothers_names(
     code (blank/missing), the name is left as-is and the code column is
     blank for that row rather than guessing.
     If `code_col` or `group_col` isn't present in df at all (e.g. someone
-    runs AutoCleaner standalone on data with no Code column), this is a
+    runs cleaning standalone on data with no Code column), this is a
     no-op — df is returned unchanged rather than raising an error.
     """
     df = df.copy()
@@ -232,12 +231,14 @@ def convert_cs_brothers_names(
         return df
     if code_map is None:
         code_map = CS_BROTHERS_CODE_MAP
- 
+
     if "CSBrothersCode" not in df.columns:
         df["CSBrothersCode"] = ""
- 
+
     mask = df[group_col].astype(str).str.upper() == "CS BROTHERS"
- 
+    if not mask.any():
+        return df
+
     def build_name(row):
         code = row[code_col]
         if pd.isna(code) or str(code).strip() == "":
@@ -245,17 +246,16 @@ def convert_cs_brothers_names(
         code_str = str(code).strip()
         friendly_name = code_map.get(code_str, code_str)  # fallback to raw code if unmapped
         return f"CS BROTHERS - {friendly_name}", code_str
- 
-    if mask.any():
-        results = df.loc[mask].apply(build_name, axis=1)
-        df.loc[mask, name_col] = results.apply(lambda t: t[0])
-        df.loc[mask, "CSBrothersCode"] = results.apply(lambda t: t[1])
- 
+
+    results = df.loc[mask].apply(build_name, axis=1)
+    df.loc[mask, name_col] = results.apply(lambda t: t[0])
+    df.loc[mask, "CSBrothersCode"] = results.apply(lambda t: t[1])
+
     return df
 
 
 # ---------------------------------------------------------------------
-# 7. CONVENIENCE WRAPPER — one call to run the whole pipeline
+# 8. CONVENIENCE WRAPPER — one call to run the whole pipeline
 # ---------------------------------------------------------------------
 def process(
     df: pd.DataFrame,
@@ -268,7 +268,7 @@ def process(
     """
     Full pipeline: normalize whitespace, optionally split out Econsave
     branch codes, group, then optionally differentiate CS Brothers
-    outlets by their store code. This is what app.py should call.
+    outlets by their store code. This is what gui/step2_clean.py calls.
     Set handle_econsave=False if this dataset never has Econsave rows.
     Set handle_cs_brothers=False to skip CS Brothers outlet codes.
     """
@@ -282,11 +282,11 @@ def process(
 
 
 if __name__ == "__main__":
-    # Quick manual check when running `python cleaning.py` directly
+    # Quick manual check when running `python cleaning.py` directly:
+    # reports conflicting entries in mapping.csv.
     from mapping_store import get_mapping_path
 
-    pairs = load_mapping()
-    conflicts = validate_mapping(pairs)
+    conflicts = validate_mapping(load_mapping())
     if conflicts:
         print(f"{len(conflicts)} conflicting name(s) found:")
         for name, groups in conflicts.items():

@@ -1,16 +1,15 @@
 """
-invoice_converter.py
+InvoiceConverter.py
 
-Conversion logic for WMG's invoice listing .xlsx files, extracted from
-InvoiceConverter.py with the GUI removed. Same pattern as cleaning.py:
-every function here takes a file path or DataFrame in and returns data
-out — no Tkinter, no file dialogs, no print statements.
+Conversion logic for WMG's invoice listing .xlsx files, with no GUI.
+Same pattern as cleaning.py: every function here takes a file path or
+DataFrame in and returns data out — no Tkinter, no file dialogs, no
+print statements.
 
 The GUI screen that calls this lives in gui/step1_convert.py.
 """
 
 import re
-import csv
 import zipfile
 import tempfile
 import datetime
@@ -19,6 +18,12 @@ from collections import defaultdict
 
 import openpyxl
 import pandas as pd
+
+FIELDS = [
+    "DocNo", "DocDate", "Code", "Name", "InvoiceAmount",
+    "Seq", "GLCode", "Description", "Project", "Quantity",
+    "UOM", "UnitPrice", "LineAmount",
+]
 
 
 def patch_xlsx(input_path: str) -> str:
@@ -65,9 +70,11 @@ def flatten(rows):
     unrecognized = []
 
     for i, row in enumerate(rows):
-        c = (list(row) + [None] * 18)[:18]
+        # Only columns up to c15 carry data this parser uses (c14 is
+        # skipped but kept positionally so the names stay column-accurate).
+        c = (list(row) + [None] * 16)[:16]
         (c0, c1, c2, c3, c4, c5, c6, c7, c8, c9,
-         c10, c11, c12, c13, c14, c15, c16, c17) = c
+         c10, c11, c12, c13, _, c15) = c
 
         if c8 == "Grand Total Amount (RM)":
             break
@@ -134,13 +141,6 @@ def flatten(rows):
     return records, unrecognized
 
 
-FIELDS = [
-    "DocNo", "DocDate", "Code", "Name", "InvoiceAmount",
-    "Seq", "GLCode", "Description", "Project", "Quantity",
-    "UOM", "UnitPrice", "LineAmount",
-]
-
-
 def convert_file(input_path: str):
     """
     Runs the full conversion for a given input path.
@@ -180,11 +180,3 @@ def convert_to_dataframe(input_path: str):
     records, unrecognized, mismatches, invoice_count = convert_file(input_path)
     df = pd.DataFrame(records, columns=FIELDS)
     return df, unrecognized, mismatches, invoice_count
-
-
-def write_csv(records, output_path):
-    """Kept for standalone/manual use. The combined app uses df.to_csv() instead."""
-    with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDS)
-        writer.writeheader()
-        writer.writerows(records)

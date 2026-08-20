@@ -20,7 +20,7 @@ from gui.step3_analyze import AnalyzeFrame
 class MainApp:
     def __init__(self, root):
         self.root = root
-        root.title("WMG Data Pipeline")
+        root.title("WMG SuperApp")
         root.geometry("650x560")
         root.resizable(False, False)
 
@@ -40,7 +40,7 @@ class MainApp:
         for widget in self.container.winfo_children():
             widget.destroy()
 
-    #Step 1: Convert
+    # Step 1: Convert
     def show_step1(self):
         self._clear_container()
         self.step_label.config(text="Step 1 of 3 — Convert Invoice")
@@ -50,7 +50,7 @@ class MainApp:
         self.converted_df = df
         self.show_step2()
 
-    #Step 2: Clean & group
+    # Step 2: Clean & group
     def show_step2(self):
         self._clear_container()
         self.step_label.config(text="Step 2 of 3 — Clean & Group Names")
@@ -65,7 +65,7 @@ class MainApp:
         self.cleaned_df = df
         self.show_step3()
 
-    #Step 3: Analyze (placeholder until AutoEDA is ready) 
+    # Step 3: Analyze
     def show_step3(self):
         self._clear_container()
         self.step_label.config(text="Step 3 of 3 — Analyze")

@@ -8,7 +8,7 @@ On Next, hands the cleaned DataFrame to on_next().
 """
 
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 from cleaning import process, unmatched_names, reload_mapping
 from mapping_editor import MappingEditor
@@ -43,6 +43,14 @@ class CleanFrame(tk.Frame):
             fill="x", padx=15, pady=5
         )
 
+        self.export_btn = tk.Button(
+            self,
+            text="Export Cleaned & Grouped Data...",
+            command=self.export_data,
+            state="disabled",
+        )
+        self.export_btn.pack(fill="x", padx=15, pady=5)
+
         tk.Label(self, text="Status", anchor="w", font=("Segoe UI", 10, "bold")).pack(fill="x", **pad)
         self.status_text = tk.Text(self, height=10, state="disabled", bg="#f5f5f5")
         self.status_text.pack(fill="both", expand=True, padx=15)
@@ -73,6 +81,9 @@ class CleanFrame(tk.Frame):
             missed = unmatched_names(self.cleaned_df, name_col="Name")
 
             self.log(f"Cleaning complete. {len(self.cleaned_df)} rows processed.")
+
+            self._log_data_quality_summary()
+
             if missed:
                 self.log(f"{len(missed)} name(s) not in the mapping (grouped as 'Other'):")
                 for name in missed[:10]:
@@ -83,9 +94,55 @@ class CleanFrame(tk.Frame):
                 self.log("All names matched the mapping.")
 
             self.next_btn.config(state="normal")
+            self.export_btn.config(state="normal")
         except Exception as e:
             messagebox.showerror("Error while cleaning", str(e))
             self.log(f"ERROR: {e}")
+
+    def _log_data_quality_summary(self):
+        """
+        Logs a quick data-quality snapshot of the cleaned/grouped data:
+        total missing values (with a per-column breakdown if any exist)
+        and count of fully duplicated rows. Purely informational — does
+        not block or alter cleaning in any way.
+        """
+        df = self.cleaned_df
+
+        total_missing = int(df.isna().sum().sum())
+        self.log(f"Missing values: {total_missing} total")
+        if total_missing > 0:
+            per_col = df.isna().sum()
+            per_col = per_col[per_col > 0].sort_values(ascending=False)
+            for col, count in per_col.items():
+                self.log(f"   - {col}: {count} missing")
+
+        dup_count = int(df.duplicated().sum())
+        self.log(f"Duplicate rows (fully identical): {dup_count}")
+
+    def export_data(self):
+        if self.cleaned_df is None:
+            messagebox.showerror("No data", "Run cleaning first before exporting.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Export cleaned & grouped data",
+            defaultextension=".xlsx",
+            filetypes=[("Excel file", "*.xlsx"), ("CSV file", "*.csv")],
+            initialfile="Cleaned_Grouped_Data.xlsx",
+        )
+        if not path:
+            return
+
+        try:
+            if path.lower().endswith(".csv"):
+                self.cleaned_df.to_csv(path, index=False)
+            else:
+                self.cleaned_df.to_excel(path, index=False)
+            self.log(f"Cleaned & grouped data exported to:\n{path}")
+            messagebox.showinfo("Exported", f"File saved successfully:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Error while exporting", str(e))
+            self.log(f"ERROR exporting file: {e}")
 
     def open_mapping_editor(self):
         def on_close(saved):

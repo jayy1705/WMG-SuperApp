@@ -1,9 +1,10 @@
 """
 analysis_charts.py
 
-matplotlib/seaborn chart builders for AutoEDA's Overall Sales Report.
-Each function returns an io.BytesIO PNG buffer ready to hand to
-analysis_pdf.py's ReportLab Image flowable — nothing is saved to disk.
+matplotlib/seaborn chart builders for AutoEDA's reports. Each function
+returns an io.BytesIO PNG buffer ready to hand to a ReportLab Image
+flowable (analysis_pdf.py / analysis_monthly_pdf.py) — nothing is saved
+to disk.
 
 Charts are sized to match the printable area of a landscape A4 page (see
 _dynamic_figsize) so they fill the page instead of floating in a small
@@ -64,8 +65,48 @@ def _currency_formatter(x, pos):
     return f"{x:.0f}"
 
 
+def _paged_title(title: str, page_num: int, total_pages: int) -> str:
+    """Append a '(Page X of Y)' marker only when there's more than one page."""
+    if total_pages > 1:
+        return f"{title}   (Page {page_num} of {total_pages})"
+    return title
+
+
+def _build_barh(
+    labels,
+    values,
+    title: str,
+    xlabel: str,
+    bar_colors,
+    title_fontsize: int,
+) -> io.BytesIO:
+    """
+    Shared horizontal bar-chart builder behind both bar charts in the
+    reports (outlet/branch overview and per-outlet/per-branch products).
+    Highest value at the top, value labels at the end of each bar, page-
+    filling figure height. `bar_colors` is either a single colour or a
+    per-bar list.
+    """
+    fig, ax = plt.subplots(figsize=_dynamic_figsize(len(labels)))
+
+    ax.barh(labels, values, color=bar_colors)
+    ax.invert_yaxis()  # highest value at top
+    ax.set_xlabel(xlabel, fontsize=13)
+    ax.set_title(title, fontsize=title_fontsize, fontweight="bold", pad=14)
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(_currency_formatter))
+    ax.tick_params(axis="y", labelsize=11)
+    ax.tick_params(axis="x", labelsize=11)
+
+    max_val = values.max() if len(values) else 0
+    for i, value in enumerate(values):
+        ax.text(value + max_val * 0.005, i, f"{value:,.0f}", va="center", fontsize=10)
+
+    fig.tight_layout()
+    return _fig_to_buffer(fig)
+
+
 # ---------------------------------------------------------------------
-# Chart 1: yearly overview — total sales per outlet, sorted descending
+# Chart 1: overview — total sales per outlet (or per branch), sorted desc
 # ---------------------------------------------------------------------
 def build_outlet_overview_chart(
     outlet_totals: pd.DataFrame,
@@ -86,33 +127,21 @@ def build_outlet_overview_chart(
     page_num / total_pages: shown in the chart title when there was more
     than one page (e.g. "Page 2 of 2").
     """
-    n = len(outlet_totals)
-    figsize = _dynamic_figsize(n)
-    fig, ax = plt.subplots(figsize=figsize)
-
-    ax.barh(outlet_totals[name_col], outlet_totals["TotalSales"], color=BAR_COLOR)
-    ax.invert_yaxis()  # highest sales at top
-    ax.set_xlabel("Total Sales (RM)", fontsize=13)
-    full_title = title
     if period_label:
-        full_title += f"   |   Period: {period_label}"
-    if total_pages > 1:
-        full_title += f"   (Page {page_num} of {total_pages})"
-    ax.set_title(full_title, fontsize=17, fontweight="bold", pad=14)
-    ax.xaxis.set_major_formatter(mticker.FuncFormatter(_currency_formatter))
-    ax.tick_params(axis="y", labelsize=11)
-    ax.tick_params(axis="x", labelsize=11)
+        title += f"   |   Period: {period_label}"
 
-    max_val = outlet_totals["TotalSales"].max()
-    for i, value in enumerate(outlet_totals["TotalSales"]):
-        ax.text(value + max_val * 0.005, i, f"{value:,.0f}", va="center", fontsize=10)
-
-    fig.tight_layout()
-    return _fig_to_buffer(fig)
+    return _build_barh(
+        labels=outlet_totals[name_col],
+        values=outlet_totals["TotalSales"],
+        title=_paged_title(title, page_num, total_pages),
+        xlabel="Total Sales (RM)",
+        bar_colors=BAR_COLOR,
+        title_fontsize=17,
+    )
 
 
 # ---------------------------------------------------------------------
-# Chart 2: product sales within a single outlet (one page per <=25 chunk)
+# Chart 2: product sales within a single outlet/branch (one page per <=25)
 # ---------------------------------------------------------------------
 def build_outlet_product_chart(
     outlet_name: str,
@@ -122,34 +151,25 @@ def build_outlet_product_chart(
     total_pages: int = 1,
 ) -> io.BytesIO:
     """
-    product_data: columns ['Description', 'Sales'] for ONE outlet, already
-    paginated to <=25 rows by analysis.paginate_products().
+    product_data: columns ['Description', 'Sales'] for ONE outlet/branch,
+    already paginated to <=25 rows by analysis.paginate_rows().
     page_num / total_pages: shown in the chart title when an outlet needed
     more than one page (e.g. "Page 2 of 3").
     """
-    n = len(product_data)
-    figsize = _dynamic_figsize(n)
-    fig, ax = plt.subplots(figsize=figsize)
+    colors = [
+        OTHERS_COLOR if desc == "Others" else ACCENT_COLOR for desc in product_data["Description"]
+    ]
 
-    colors = [OTHERS_COLOR if desc == "Others" else ACCENT_COLOR for desc in product_data["Description"]]
-    ax.barh(product_data["Description"], product_data["Sales"], color=colors)
-    ax.invert_yaxis()
-    ax.set_xlabel("Sales (RM)", fontsize=13)
-
-    title = f"{outlet_name} — Total Sales: RM {total_sales:,.2f}"
-    if total_pages > 1:
-        title += f"   (Page {page_num} of {total_pages})"
-    ax.set_title(title, fontsize=15, fontweight="bold", pad=14)
-    ax.xaxis.set_major_formatter(mticker.FuncFormatter(_currency_formatter))
-    ax.tick_params(axis="y", labelsize=11)
-    ax.tick_params(axis="x", labelsize=11)
-
-    max_val = product_data["Sales"].max()
-    for i, value in enumerate(product_data["Sales"]):
-        ax.text(value + max_val * 0.005, i, f"{value:,.0f}", va="center", fontsize=10)
-
-    fig.tight_layout()
-    return _fig_to_buffer(fig)
+    return _build_barh(
+        labels=product_data["Description"],
+        values=product_data["Sales"],
+        title=_paged_title(
+            f"{outlet_name} — Total Sales: RM {total_sales:,.2f}", page_num, total_pages
+        ),
+        xlabel="Sales (RM)",
+        bar_colors=colors,
+        title_fontsize=15,
+    )
 
 
 # ---------------------------------------------------------------------

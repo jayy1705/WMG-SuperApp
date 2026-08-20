@@ -5,8 +5,8 @@ A Tkinter window that lets a non-technical user view, add, edit, and
 delete customer name -> group mappings, without touching mapping.csv
 or any source code directly.
 
-Open this from app.py as a Toplevel window (see app.py's
-"Manage Customer Names" button).
+Opened as a Toplevel window from gui/step2_clean.py's "Manage Customer
+Names" button.
 """
 
 import tkinter as tk
@@ -79,18 +79,14 @@ class MappingEditor(tk.Toplevel):
         raw = simpledialog.askstring(
             "Add New", "Raw name (exactly as it appears in your data file):", parent=self
         )
-        if not raw:
+        if not raw or not raw.strip():
             return
         raw = raw.strip()
-        if not raw:
-            return
 
         group = simpledialog.askstring("Add New", f"Group name for '{raw}':", parent=self)
-        if not group:
+        if not group or not group.strip():
             return
         group = group.strip()
-        if not group:
-            return
 
         # Warn on exact duplicate raw name (case-insensitive) already present
         existing = next((g for r, g in self.pairs if r.strip().upper() == raw.upper()), None)
@@ -108,14 +104,15 @@ class MappingEditor(tk.Toplevel):
 
     # -------------------------------------------------------------
     def _selected_index(self):
+        """Index into self.pairs of the currently selected tree row, or None."""
         selection = self.tree.selection()
         if not selection:
             messagebox.showinfo("No selection", "Select a row first.", parent=self)
             return None
-        # iid was assigned as the index into the SORTED list used in _refresh_tree
-        sorted_pairs = sorted(self.pairs, key=lambda p: p[1])
+
+        # The tree is displayed sorted, so match on the row's values
+        # rather than trusting the iid to line up with self.pairs.
         row_values = self.tree.item(selection[0], "values")
-        # Find the matching pair in self.pairs (not sorted_pairs) by exact match
         for idx, (raw, group) in enumerate(self.pairs):
             if raw == row_values[0] and group == row_values[1]:
                 return idx
@@ -141,7 +138,7 @@ class MappingEditor(tk.Toplevel):
         idx = self._selected_index()
         if idx is None:
             return
-        raw, group = self.pairs[idx]
+        raw = self.pairs[idx][0]
         if messagebox.askyesno("Confirm delete", f"Delete mapping for '{raw}'?", parent=self):
             del self.pairs[idx]
             self._refresh_tree()

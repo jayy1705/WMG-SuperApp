@@ -5,6 +5,11 @@ ReportLab Platypus layout for AutoEDA's "Overall Sales Report" (Report 1).
 Takes the pre-computed aggregation tables (analysis.py) and pre-rendered
 chart PNGs (analysis_charts.py) and assembles them into a single A4 PDF.
 
+Also holds the page geometry, paragraph styles, and the shared layout
+helpers (_chart_page, build_product_pages_section) that Report 2
+(analysis_monthly_pdf.py) reuses, so both reports stay visually
+consistent instead of duplicating the same sizing arithmetic.
+
 Pure ReportLab (no HTML/CSS, no system dependencies) — safe to bundle
 with PyInstaller.
 """
@@ -22,8 +27,6 @@ from reportlab.platypus import (
     Spacer,
     PageBreak,
     Image,
-    Table,
-    TableStyle,
     KeepTogether,
 )
 
@@ -49,7 +52,6 @@ SECTION_STYLE = ParagraphStyle(
 OUTLET_HEADING_STYLE = ParagraphStyle(
     "OutletHeading", parent=styles["Heading3"], fontSize=10, spaceBefore=2, spaceAfter=2,
 )
-BODY_STYLE = styles["Normal"]
 
 
 def _image_flowable(png_buffer: io.BytesIO, max_width: float, max_height: float = None) -> Image:
@@ -88,8 +90,52 @@ def _heading_block_height(paragraphs: list, width: float) -> float:
     return total
 
 
+def _chart_page(headings: list, img: io.BytesIO, extra: list = None, extra_height: float = 0):
+    """
+    One chart page: heading(s), any extra flowables (e.g. Report 2's KPI
+    table), then the chart image scaled to whatever vertical space is
+    left. Used by every chart section in both reports.
+
+    extra_height: space the `extra` flowables will occupy, so the image
+    is shrunk to make room for them.
+    """
+    reserved = _heading_block_height(headings, CONTENT_WIDTH) + 4 + extra_height  # +4 safety buffer
+    block = list(headings)
+    if extra:
+        block += extra
+    block.append(_image_flowable(img, max_width=CONTENT_WIDTH, max_height=CONTENT_HEIGHT - reserved))
+    return KeepTogether(block)
+
+
+def build_product_pages_section(order: list, chart_imgs: dict, section_title: str) -> list:
+    """
+    "Product sales per <entity>" section, one entity per page, in the
+    order given (normally descending sales, matching the overview chart).
+    An entity whose chart was paginated (more than 25 products => multiple
+    chart images) gets one page per image, with the "(Page X of Y)" marker
+    already baked into the chart title.
+
+    Shared by Report 1 (outlets) and Report 2 (branches) — only the
+    section heading text and the entity list differ.
+    """
+    elements = []
+    first = True
+    for name in order:
+        for img in chart_imgs.get(name, []):
+            headings = []
+            if first:
+                headings.append(Paragraph(section_title, SECTION_STYLE))
+                first = False
+            headings.append(Paragraph(str(name), OUTLET_HEADING_STYLE))
+
+            elements.append(_chart_page(headings, img))
+            elements.append(PageBreak())
+
+    return elements
+
+
 def _cover_page(period_label: str, generated_at, grand_total: float) -> list:
-    elements = [
+    return [
         Spacer(1, 60 * mm),
         Paragraph("Overall Sales Report", TITLE_STYLE),
         Paragraph(f"Period covered: {period_label}", SUBTITLE_STYLE),
@@ -98,7 +144,6 @@ def _cover_page(period_label: str, generated_at, grand_total: float) -> list:
         Paragraph(f"Total Company-wide Sales: RM {grand_total:,.2f}", SECTION_STYLE),
         PageBreak(),
     ]
-    return elements
 
 
 def _section1_overview(chart1_imgs: list, period_label: str) -> list:
@@ -107,77 +152,21 @@ def _section1_overview(chart1_imgs: list, period_label: str) -> list:
         heading_text = f"1. Yearly Overview — Sales by Outlet ({period_label})"
         if len(chart1_imgs) > 1:
             heading_text += f" — Page {idx + 1} of {len(chart1_imgs)}"
-        heading = Paragraph(heading_text, SECTION_STYLE)
-        reserved = _heading_block_height([heading], CONTENT_WIDTH) + 4  # small safety buffer
-        elements.append(
-            KeepTogether(
-                [
-                    heading,
-                    _image_flowable(img, max_width=CONTENT_WIDTH, max_height=CONTENT_HEIGHT - reserved),
-                ]
-            )
-        )
+        elements.append(_chart_page([Paragraph(heading_text, SECTION_STYLE)], img))
         elements.append(PageBreak())
-    return elements
-
-
-def _section2_outlet_products(
-    outlet_totals,
-    outlet_chart_imgs: dict,
-) -> list:
-    """
-    One outlet per page. If an outlet's chart was paginated (more than 25
-    products => multiple chart images), each page image gets its own page
-    with a "(Page X of Y)" marker already baked into the chart title.
-    """
-    ordered_outlets = list(outlet_totals["group"])
-
-    elements = []
-    first = True
-    for outlet in ordered_outlets:
-        for img in outlet_chart_imgs[outlet]:
-            block = []
-            headings = []
-            if first:
-                section_heading = Paragraph("2. Product Sales per Outlet", SECTION_STYLE)
-                block.append(section_heading)
-                headings.append(section_heading)
-                first = False
-            outlet_heading = Paragraph(outlet, OUTLET_HEADING_STYLE)
-            block.append(outlet_heading)
-            headings.append(outlet_heading)
-
-            reserved = _heading_block_height(headings, CONTENT_WIDTH) + 4  # small safety buffer
-            block.append(_image_flowable(img, max_width=CONTENT_WIDTH, max_height=CONTENT_HEIGHT - reserved))
-
-            elements.append(KeepTogether(block))
-            elements.append(PageBreak())
-
     return elements
 
 
 def _section3_contribution(chart3_img: io.BytesIO, chart3b_img: io.BytesIO = None) -> list:
-    heading = Paragraph("3. Product Contribution to Total Sales", SECTION_STYLE)
-    reserved = _heading_block_height([heading], CONTENT_WIDTH) + 4  # small safety buffer
     elements = [
-        KeepTogether(
-            [
-                heading,
-                _image_flowable(chart3_img, max_width=CONTENT_WIDTH, max_height=CONTENT_HEIGHT - reserved),
-            ]
-        ),
+        _chart_page([Paragraph("3. Product Contribution to Total Sales", SECTION_STYLE)], chart3_img)
     ]
 
     if chart3b_img is not None:
         elements.append(PageBreak())
-        heading_b = Paragraph("3b. \u201cOthers\u201d — Detailed Breakdown", SECTION_STYLE)
-        reserved_b = _heading_block_height([heading_b], CONTENT_WIDTH) + 4
         elements.append(
-            KeepTogether(
-                [
-                    heading_b,
-                    _image_flowable(chart3b_img, max_width=CONTENT_WIDTH, max_height=CONTENT_HEIGHT - reserved_b),
-                ]
+            _chart_page(
+                [Paragraph("3b. \u201cOthers\u201d — Detailed Breakdown", SECTION_STYLE)], chart3b_img
             )
         )
 
@@ -192,14 +181,13 @@ def build_overall_sales_pdf(
     outlet_chart_imgs: dict,
     chart1_imgs: list,
     chart3_img: io.BytesIO,
-    product_contribution,
     chart3b_img: io.BytesIO = None,
 ) -> str:
     """
     Assemble all sections into a single A4 PDF and save to output_path.
     outlet_chart_imgs: {"OUTLET NAME": [img_page1, img_page2, ...], ...}
     — a list per outlet since an outlet with >25 products spans multiple
-    chart pages (see analysis.paginate_products).
+    chart pages (see analysis.paginate_rows).
     """
     doc = SimpleDocTemplate(
         output_path,
@@ -211,12 +199,12 @@ def build_overall_sales_pdf(
         title="Overall Sales Report",
     )
 
-    grand_total = outlet_totals["TotalSales"].sum()
-
     story = []
-    story += _cover_page(period_label, generated_at, grand_total)
+    story += _cover_page(period_label, generated_at, outlet_totals["TotalSales"].sum())
     story += _section1_overview(chart1_imgs, period_label)
-    story += _section2_outlet_products(outlet_totals, outlet_chart_imgs)
+    story += build_product_pages_section(
+        list(outlet_totals["group"]), outlet_chart_imgs, "2. Product Sales per Outlet"
+    )
     story += _section3_contribution(chart3_img, chart3b_img)
 
     doc.build(story)
